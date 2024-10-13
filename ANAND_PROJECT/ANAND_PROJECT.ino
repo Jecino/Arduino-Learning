@@ -1,123 +1,174 @@
+#include <MPU6050.h>
 #include <Wire.h>
 #include <Servo.h>
 
-
-#define led 8
-#define sensor 7
-#define Presenca 12
+#define PIR 12
 #define nivel_agua A1
+#define VCC_nivel_agua 11
 #define servo 5
+#define TMP_LAST 10000
+#define limiar 1000 //Limiar para vibrações
+#define VIBRATION_AMOUNT 500 //Quantidade de vibrações para registrar
 
-#define TMP_DETECT 5000
-
+MPU6050 mpu;
 Servo meuServo;
 
-int vibracoes = 0;
-float taxaVibracao = 0;
+int ax, ay, az; // Variáveis para armazenar os valores do acelerômetro
+int last_ax, last_ay, last_az; // Para armazenar a última leitura
+
+bool presenceDetected = false;
+bool firstVibration = true;
+bool VibrationOk = false;
+int lastPresenceTime = 0;
 int initialTime = 0;
 int currentTime = 0;
-int alguempresente = 0;
-
-const int MPU=0x68;
-int AcX,AcY,AcZ,Tmp,GyX,GyY,GyZ;
+int firstVibrationTime = 0;
+int lastVibrationTime = 0;
+float taxaVibracao = 0;
 
 void setup() {
 
+  Serial.begin(9600);
+  
   //Inicializa o MPU-6050
   Wire.begin();
-  Wire.beginTransmission(MPU);
-  Wire.write(0x6B); 
-  Wire.write(0); 
-  Wire.endTransmission(true);
-  
-  Serial.begin(9600);
-  pinMode(sensor, INPUT);
-  pinMode(led, OUTPUT);
-  pinMode(Presenca, INPUT);
+  mpu.initialize();
+
+  mpu.getAcceleration(&last_ax, &last_ay, &last_az);
+    
+  pinMode(PIR, INPUT);
+  pinMode(VCC_nivel_agua, OUTPUT);
   pinMode(nivel_agua, INPUT);
   meuServo.attach(servo);
   meuServo.write(0);
 
 }
-//AAAAAAAAAAAAAAAAAAAAAAAAA
+
 void loop() {
-  delay(500);
-  Wire.beginTransmission(MPU);
-  Wire.write(0x3B);  // starting with register 0x3B (ACCEL_XOUT_H)
-  Wire.endTransmission(false);
-  
-  //Solicita os dados do sensor
-  Wire.requestFrom(MPU,14,true);
-
-  AcX=Wire.read()<<8|Wire.read();  //0x3B (ACCEL_XOUT_H) & 0x3C (ACCEL_XOUT_L)     
-  AcY=Wire.read()<<8|Wire.read();  //0x3D (ACCEL_YOUT_H) & 0x3E (ACCEL_YOUT_L)
-  AcZ=Wire.read()<<8|Wire.read();  //0x3F (ACCEL_ZOUT_H) & 0x40 (ACCEL_ZOUT_L)
-  Tmp=Wire.read()<<8|Wire.read();  //0x41 (TEMP_OUT_H) & 0x42 (TEMP_OUT_L)
-  GyX=Wire.read()<<8|Wire.read();  //0x43 (GYRO_XOUT_H) & 0x44 (GYRO_XOUT_L)
-  GyY=Wire.read()<<8|Wire.read();  //0x45 (GYRO_YOUT_H) & 0x46 (GYRO_YOUT_L)
-  GyZ=Wire.read()<<8|Wire.read();  //0x47 (GYRO_ZOUT_H) & 0x48 (GYRO_ZOUT_L)
-
-  Serial.print("Temperatura: ");
-  Serial.println(Tmp/340.00+36.53);
-
-  Serial.print("Acelerometro: ");
-  Serial.println(AcX);
-  
-  Serial.println(digitalRead(Presenca));
-  
   currentTime = millis();
-
-  if(alguempresente != 1){
-    alguempresente = digitalRead(Presenca);
-  }
-   
-  //Se houve alguem presente
-  if(alguempresente == 1){
-    
-    //Medindo a quantidade de vibração enquanto não acabar o tempo
-    if(currentTime - initialTime < TMP_DETECT){
-      if(digitalRead(sensor) == LOW){   
-        vibracoes += 1; 
-      } 
-    }
+  Serial.print("DEBUG PIR: ");
+  Serial.println(digitalRead(PIR));
   
-    //Quando terminado o tempo, calcular a taxa e decidir
-    else{ 
-      taxaVibracao = vibracoes / 5;
+  //Detecta apenas uma vez para não sobreescrever o valor
+  if(presenceDetected == false){
+    presenceDetected = digitalRead(PIR) == HIGH;
 
-      Serial.print("Taxa de vibraçao: ");
-      Serial.println(taxaVibracao);
-      
-      int nivelagua = analogRead(nivel_agua);
-      map(nivelagua, 0, 1023, 0, 255);
-
-      Serial.print("Nivel agua: ");
-      Serial.println(nivelagua);
-    
-      //Se a taxa de vibração for maior que x dar descarga
-        if(nivelagua >= 128){
-          if(taxaVibracao >= 2){
-            digitalWrite(led, HIGH);
-            
-            meuServo.write(90);
-            delay(5000);
-            meuServo.write(0);
-            
-            vibracoes = 0;
-            taxaVibracao = 0;
-            alguempresente = 0;
-            initialTime = currentTime;
-          }
-        }
-      
-        //Se não, atualiza as variáveis
-        else{
-          digitalWrite(led, LOW);
-          vibracoes = 0;
-          taxaVibracao = 0;
-          alguempresente = 0;
-          initialTime = currentTime;
-        }
+    //Guarda o tempo em que ocorreu a detecção
+    if(presenceDetected == true){
+      lastPresenceTime = currentTime;
     }
   }
+     
+  //Se não houve alguem presente
+  if(!presenceDetected){
+    Serial.println("Presença não detectada");
+    return;
+  }
+
+  
+  //Medindo a taxa de vibrações
+  taxaVibracao = VibrationRate();
+
+  //Armazena se em algum momento a taxa de vibração foi maior ou igual a 2
+  if(taxaVibracao >= 10){
+    VibrationOk = true;     
+  }
+
+  //Analisando o nível da água
+  digitalWrite(VCC_nivel_agua, HIGH);
+  delay(10);
+  int waterlevel_value = analogRead(nivel_agua);
+  digitalWrite(VCC_nivel_agua, LOW);
+  
+  waterlevel_value = map(waterlevel_value, 0, 1023, 0, 255);
+  Serial.print("Nivel agua: ");
+  Serial.println(waterlevel_value);
+
+  //Se o nível da água tiver baixado, a descarga foi ativada manualmente
+  if(waterlevel_value < 128){
+    Serial.println("Descarga manual ativada");
+    presenceDetected = false;
+    firstVibration = true;
+    VibrationOk = false;
+    lastPresenceTime = 0;
+    initialTime = currentTime;
+    firstVibrationTime = 0;
+    lastVibrationTime = 0;
+    taxaVibracao = 0;
+    return;
+  }
+  
+  Serial.println("Descarga manual não ativada");
+
+  Serial.print("DEBUG LASTPRESENCETIME: "); Serial.println(lastPresenceTime);
+  Serial.print("DEBUG LASTVIBRATIONTIME: "); Serial.println(lastVibrationTime);
+  Serial.print("DEBUG CURRENTTIME: "); Serial.println(currentTime);
+  //Verifica se a ultima detecção de presença e de vibração aconteceram a mais tempo que TMP_LAST e se houve vibração em algum momento
+  if(currentTime - lastPresenceTime > TMP_LAST && currentTime - lastVibrationTime > TMP_LAST && VibrationOk == true){
+    
+    meuServo.write(90);
+    delay(5000);
+    meuServo.write(0);
+    
+    presenceDetected = false;
+    firstVibration = true;
+    VibrationOk = false;
+    lastPresenceTime = 0;
+    initialTime = currentTime;
+    firstVibrationTime = 0;
+    lastVibrationTime = 0;
+    taxaVibracao = 0;
+  }
+}
+
+float VibrationRate(){
+  int vibracoes = 0;
+
+  for(int i = 0; i < VIBRATION_AMOUNT; i++){
+    //Lê os valores atuais do acelerômetro
+      mpu.getAcceleration(&ax, &ay, &az);
+    
+      // Calcula a diferença em relação à última leitura
+      int delta_x = abs(ax - last_ax);
+      int delta_y = abs(ay - last_ay);
+      int delta_z = abs(az - last_az);
+    
+      // Verifica se a diferença excede o limiar, indicando vibração
+      if (delta_x > limiar) {
+        Serial.println("Vibração detectada!");
+
+        lastVibrationTime = currentTime - initialTime;
+        
+        vibracoes += 1;
+      }
+      if(delta_y > limiar){
+        Serial.println("Vibração detectada!");
+
+        lastVibrationTime = currentTime - initialTime;
+        
+        vibracoes += 1;
+      }
+      if(delta_z > limiar){
+        Serial.println("Vibração detectada!");
+
+        lastVibrationTime = currentTime - initialTime;
+        
+        vibracoes += 1;
+      }
+    
+      // Atualiza os valores para a próxima iteração
+      last_ax = ax;
+      last_ay = ay;
+      last_az = az;
+
+      delay(10);
+    }
+
+  // Calcula a média das diferenças
+  float taxa = vibracoes / 5;
+
+  Serial.print("Taxa de Vibração: ");
+  Serial.println(taxa);
+
+  return taxa;
 }
