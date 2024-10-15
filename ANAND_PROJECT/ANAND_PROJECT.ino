@@ -1,4 +1,4 @@
-#include <MPU6050.h>
+ #include <MPU6050.h>
 #include <Wire.h>
 #include <Servo.h>
 
@@ -21,7 +21,7 @@ bool firstVibration = true;
 bool VibrationOk = false;
 int lastPresenceTime = 0;
 int initialTime = 0;
-int currentTime = 0;
+long currentTime = 0;
 int firstVibrationTime = 0;
 int lastVibrationTime = 0;
 float taxaVibracao = 0;
@@ -40,7 +40,7 @@ void setup() {
   pinMode(VCC_nivel_agua, OUTPUT);
   pinMode(nivel_agua, INPUT);
   meuServo.attach(servo);
-  meuServo.write(0);
+  meuServo.write(180);
 
 }
 
@@ -107,8 +107,8 @@ void loop() {
   if(currentTime - lastPresenceTime > TMP_LAST && currentTime - lastVibrationTime > TMP_LAST && VibrationOk == true){
     
     meuServo.write(90);
-    delay(5000);
-    meuServo.write(0);
+    delay(15000);
+    meuServo.write(180);
     
     presenceDetected = false;
     firstVibration = true;
